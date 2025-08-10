@@ -1,307 +1,501 @@
-# Backend Setup Guide
+# backend/app.py
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+import os
+import git
+import looker_sdk
+import json
+import tempfile
+import shutil
+from datetime import datetime
+import base64
+from pathlib import Path
+import subprocess
+import logging
 
-## 📋 Requirements File
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-Create `backend/requirements.txt`:
+app = Flask(__name__)
+CORS(app)  # Enable CORS for frontend communication
 
-```txt
-# Core Flask framework
-Flask==2.3.3
-Flask-CORS==4.0.0
+# Configuration
+class Config:
+    GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+    LOOKER_BASE_URL = os.getenv('LOOKER_BASE_URL')
+    LOOKER_CLIENT_ID = os.getenv('LOOKER_CLIENT_ID')
+    LOOKER_CLIENT_SECRET = os.getenv('LOOKER_CLIENT_SECRET')
+    WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', './workspace')
+    MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 
-# Git operations
-GitPython==3.1.37
+config = Config()
 
-# Looker SDK
-looker-sdk==22.20.0
+# Initialize workspace directory
+os.makedirs(config.WORKSPACE_DIR, exist_ok=True)
 
-# Environment and configuration
-python-dotenv==1.0.0
+# Global variables for session management
+current_repo = None
+looker_client = None
 
-# Additional utilities
-requests==2.31.0
-PyYAML==6.0.1
-
-# Development tools (optional)
-pytest==7.4.3
-black==23.9.1
-flake8==6.1.0
-```
-
-## 🚀 Setup Instructions
-
-### 1. **Create Project Structure**
-
-```bash
-your-project/
-├── backend/
-│   ├── app.py                 # Main Flask application
-│   ├── requirements.txt       # Python dependencies
-│   ├── .env                   # Environment variables
-│   └── workspace/            # Git repositories workspace
-├── index.html                # Frontend HTML file
-└── README.md                 # Project documentation
-```
-
-### 2. **Environment Setup**
-
-Create `backend/.env` file:
-
-```env
-# GitHub Configuration
-GITHUB_TOKEN=ghp_your_github_token_here
-
-# Looker Configuration
-LOOKER_BASE_URL=https://your-instance.looker.com
-LOOKER_CLIENT_ID=your_client_id
-LOOKER_CLIENT_SECRET=your_client_secret
-
-# Application Configuration
-WORKSPACE_DIR=./workspace
-FLASK_ENV=development
-FLASK_DEBUG=True
-```
-
-### 3. **Installation Commands**
-
-```bash
-# Navigate to project directory
-cd your-project
-
-# Create Python virtual environment
-python -m venv venv
-
-# Activate virtual environment
-# On Windows:
-venv\Scripts\activate
-# On macOS/Linux:
-source venv/bin/activate
-
-# Navigate to backend
-cd backend
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the backend server
-python app.py
-```
-
-### 4. **Frontend Integration**
-
-Update your frontend JavaScript to use the backend API instead of simulations. Here are the key changes needed:
-
-```javascript
-// Replace simulation functions with real API calls
-
-// Git Operations
-async function gitFetch() {
-    try {
-        updateStatusIndicator('Fetching from GitHub...', 'loading');
-        
-        const response = await fetch('http://localhost:5000/api/git/fetch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            addTerminalOutput('✓ ' + result.message);
-            updateStatusIndicator('Fetch completed successfully', 'success');
-        } else {
-            addTerminalOutput('✗ ' + result.error);
-            updateStatusIndicator('Fetch failed', 'error');
-        }
-    } catch (error) {
-        addTerminalOutput('✗ Network error: ' + error.message);
-        updateStatusIndicator('Fetch failed', 'error');
-    }
-}
-
-async function gitPush() {
-    const commitMessage = document.getElementById('commitMessage').value;
-    if (!commitMessage.trim()) {
-        alert('Please enter a commit message');
-        return;
-    }
-
-    try {
-        updateStatusIndicator('Pushing to GitHub...', 'loading');
-        
-        const response = await fetch('http://localhost:5000/api/git/push', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                commit_message: commitMessage,
-                files: null // Will add all files
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            addTerminalOutput('✓ ' + result.message);
-            updateStatusIndicator('Push completed successfully', 'success');
-            document.getElementById('commitMessage').value = '';
-        } else {
-            addTerminalOutput('✗ ' + result.error);
-            updateStatusIndicator('Push failed', 'error');
-        }
-    } catch (error) {
-        addTerminalOutput('✗ Network error: ' + error.message);
-        updateStatusIndicator('Push failed', 'error');
-    }
-}
-
-// Looker Operations
-async function testLookerConnection() {
-    const host = document.getElementById('lookerHost').value;
-    const clientId = document.getElementById('lookerClientId').value;
-    const clientSecret = document.getElementById('lookerClientSecret').value;
+class GitManager:
+    def __init__(self, workspace_dir):
+        self.workspace_dir = workspace_dir
+        self.repo_path = None
+        self.repo = None
     
-    if (!host || !clientId || !clientSecret) {
-        alert('Please enter all Looker credentials');
-        return;
-    }
-
-    try {
-        updateStatusIndicator('Testing Looker connection...', 'loading');
-        
-        const response = await fetch('http://localhost:5000/api/looker/connect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                base_url: host,
-                client_id: clientId,
-                client_secret: clientSecret
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            addTerminalOutput('✓ ' + result.message);
-            updateStatusIndicator('Looker connected successfully', 'success');
-        } else {
-            addTerminalOutput('✗ ' + result.error);
-            updateStatusIndicator('Looker connection failed', 'error');
-        }
-    } catch (error) {
-        addTerminalOutput('✗ Network error: ' + error.message);
-        updateStatusIndicator('Looker connection failed', 'error');
-    }
-}
-
-// Initialize repository on page load
-async function initializeRepository() {
-    const repoUrl = document.getElementById('repoUrl').value;
-    const githubToken = document.getElementById('githubToken').value;
+    def clone_repository(self, repo_url, token=None):
+        """Clone repository to workspace"""
+        try:
+            # Create repo-specific directory
+            repo_name = repo_url.split('/')[-1].replace('.git', '')
+            self.repo_path = os.path.join(self.workspace_dir, repo_name)
+            
+            # Remove existing directory if it exists
+            if os.path.exists(self.repo_path):
+                shutil.rmtree(self.repo_path)
+            
+            # Add token to URL if provided
+            if token and 'github.com' in repo_url:
+                repo_url = repo_url.replace('https://', f'https://{token}@')
+            
+            # Clone repository
+            self.repo = git.Repo.clone_from(repo_url, self.repo_path)
+            logger.info(f"Repository cloned to {self.repo_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error cloning repository: {e}")
+            return False
     
-    if (!repoUrl) return;
+    def fetch_changes(self):
+        """Fetch latest changes from remote"""
+        try:
+            if not self.repo:
+                raise Exception("No repository loaded")
+            
+            origin = self.repo.remotes.origin
+            origin.fetch()
+            
+            # Get fetch info
+            fetch_info = {
+                'success': True,
+                'commits_behind': len(list(self.repo.iter_commits('HEAD..origin/main'))),
+                'last_commit': str(self.repo.head.commit.hexsha[:7]),
+                'message': 'Fetch completed successfully'
+            }
+            
+            return fetch_info
+            
+        except Exception as e:
+            logger.error(f"Error fetching changes: {e}")
+            return {'success': False, 'error': str(e)}
     
-    try {
-        const response = await fetch('http://localhost:5000/api/git/clone', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                repo_url: repoUrl,
-                token: githubToken
-            })
-        });
+    def commit_and_push(self, commit_message, files_to_add=None):
+        """Commit changes and push to remote"""
+        try:
+            if not self.repo:
+                raise Exception("No repository loaded")
+            
+            # Add files
+            if files_to_add:
+                for file_path in files_to_add:
+                    self.repo.index.add([file_path])
+            else:
+                self.repo.git.add('.')
+            
+            # Check if there are changes to commit
+            if not self.repo.index.diff("HEAD"):
+                return {'success': False, 'error': 'No changes to commit'}
+            
+            # Commit changes
+            commit = self.repo.index.commit(commit_message)
+            
+            # Push to remote
+            origin = self.repo.remotes.origin
+            origin.push()
+            
+            return {
+                'success': True,
+                'commit_hash': str(commit.hexsha[:7]),
+                'message': f'Committed and pushed: {commit_message}'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error committing and pushing: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def pull_changes(self):
+        """Pull latest changes from remote"""
+        try:
+            if not self.repo:
+                raise Exception("No repository loaded")
+            
+            origin = self.repo.remotes.origin
+            pull_info = origin.pull()
+            
+            return {
+                'success': True,
+                'message': 'Pull completed successfully',
+                'changes': len(pull_info)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error pulling changes: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def get_file_tree(self):
+        """Get repository file structure"""
+        try:
+            if not self.repo_path:
+                return []
+            
+            files = []
+            for root, dirs, filenames in os.walk(self.repo_path):
+                # Skip .git directory
+                dirs[:] = [d for d in dirs if d != '.git']
+                
+                for filename in filenames:
+                    file_path = os.path.join(root, filename)
+                    relative_path = os.path.relpath(file_path, self.repo_path)
+                    
+                    # Get file stats
+                    stat = os.stat(file_path)
+                    files.append({
+                        'name': filename,
+                        'path': relative_path,
+                        'size': stat.st_size,
+                        'modified': datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    })
+            
+            return files
+            
+        except Exception as e:
+            logger.error(f"Error getting file tree: {e}")
+            return []
+    
+    def read_file(self, file_path):
+        """Read file content"""
+        try:
+            full_path = os.path.join(self.repo_path, file_path)
+            with open(full_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {e}")
+            return None
+    
+    def write_file(self, file_path, content):
+        """Write file content"""
+        try:
+            full_path = os.path.join(self.repo_path, file_path)
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True
+        except Exception as e:
+            logger.error(f"Error writing file {file_path}: {e}")
+            return False
+
+class LookerManager:
+    def __init__(self):
+        self.sdk = None
+        self.connected = False
+    
+    def connect(self, base_url, client_id, client_secret):
+        """Initialize Looker SDK connection"""
+        try:
+            config_settings = {
+                'base_url': base_url,
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'verify_ssl': True
+            }
+            
+            self.sdk = looker_sdk.init40(config_settings=config_settings)
+            
+            # Test connection
+            me = self.sdk.me()
+            self.connected = True
+            
+            return {
+                'success': True,
+                'user': me.display_name,
+                'message': f'Connected as {me.display_name}'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error connecting to Looker: {e}")
+            self.connected = False
+            return {'success': False, 'error': str(e)}
+    
+    def get_dashboards(self):
+        """Get all dashboards"""
+        try:
+            if not self.connected:
+                raise Exception("Not connected to Looker")
+            
+            dashboards = self.sdk.all_dashboards()
+            
+            dashboard_list = []
+            for dash in dashboards:
+                dashboard_list.append({
+                    'id': dash.id,
+                    'title': dash.title,
+                    'description': dash.description,
+                    'space_id': dash.space.id if dash.space else None,
+                    'created_at': dash.created_at.isoformat() if dash.created_at else None,
+                    'updated_at': dash.updated_at.isoformat() if dash.updated_at else None
+                })
+            
+            return {'success': True, 'dashboards': dashboard_list}
+            
+        except Exception as e:
+            logger.error(f"Error getting dashboards: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def run_query(self, query_id, result_format='json'):
+        """Run a query"""
+        try:
+            if not self.connected:
+                raise Exception("Not connected to Looker")
+            
+            result = self.sdk.run_query(
+                query_id=query_id,
+                result_format=result_format
+            )
+            
+            if result_format == 'json':
+                data = json.loads(result)
+                return {'success': True, 'data': data}
+            else:
+                return {'success': True, 'data': result}
+            
+        except Exception as e:
+            logger.error(f"Error running query: {e}")
+            return {'success': False, 'error': str(e)}
+
+# Initialize managers
+git_manager = GitManager(config.WORKSPACE_DIR)
+looker_manager = LookerManager()
+
+# API Routes
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.0.0'
+    })
+
+@app.route('/api/git/clone', methods=['POST'])
+def clone_repository():
+    """Clone a repository"""
+    data = request.json
+    repo_url = data.get('repo_url')
+    token = data.get('token')
+    
+    if not repo_url:
+        return jsonify({'success': False, 'error': 'Repository URL required'}), 400
+    
+    success = git_manager.clone_repository(repo_url, token)
+    
+    if success:
+        file_tree = git_manager.get_file_tree()
+        return jsonify({
+            'success': True,
+            'message': 'Repository cloned successfully',
+            'file_tree': file_tree
+        })
+    else:
+        return jsonify({'success': False, 'error': 'Failed to clone repository'}), 500
+
+@app.route('/api/git/fetch', methods=['POST'])
+def git_fetch():
+    """Fetch changes from remote"""
+    result = git_manager.fetch_changes()
+    return jsonify(result)
+
+@app.route('/api/git/push', methods=['POST'])
+def git_push():
+    """Commit and push changes"""
+    data = request.json
+    commit_message = data.get('commit_message', 'Update from web interface')
+    files_to_add = data.get('files')
+    
+    result = git_manager.commit_and_push(commit_message, files_to_add)
+    return jsonify(result)
+
+@app.route('/api/git/pull', methods=['POST'])
+def git_pull():
+    """Pull changes from remote"""
+    result = git_manager.pull_changes()
+    return jsonify(result)
+
+@app.route('/api/files/tree', methods=['GET'])
+def get_file_tree():
+    """Get repository file tree"""
+    file_tree = git_manager.get_file_tree()
+    return jsonify({'success': True, 'files': file_tree})
+
+@app.route('/api/files/read', methods=['POST'])
+def read_file():
+    """Read file content"""
+    data = request.json
+    file_path = data.get('file_path')
+    
+    if not file_path:
+        return jsonify({'success': False, 'error': 'File path required'}), 400
+    
+    content = git_manager.read_file(file_path)
+    
+    if content is not None:
+        return jsonify({'success': True, 'content': content})
+    else:
+        return jsonify({'success': False, 'error': 'Failed to read file'}), 500
+
+@app.route('/api/files/write', methods=['POST'])
+def write_file():
+    """Write file content"""
+    data = request.json
+    file_path = data.get('file_path')
+    content = data.get('content')
+    
+    if not file_path or content is None:
+        return jsonify({'success': False, 'error': 'File path and content required'}), 400
+    
+    success = git_manager.write_file(file_path, content)
+    
+    if success:
+        return jsonify({'success': True, 'message': 'File saved successfully'})
+    else:
+        return jsonify({'success': False, 'error': 'Failed to save file'}), 500
+
+@app.route('/api/files/upload', methods=['POST'])
+def upload_file():
+    """Upload file to repository"""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'No file selected'}), 400
+    
+    # Check file size
+    file.seek(0, 2)  # Seek to end
+    file_size = file.tell()
+    file.seek(0)     # Reset to beginning
+    
+    if file_size > config.MAX_FILE_SIZE:
+        return jsonify({'success': False, 'error': 'File too large'}), 400
+    
+    # Save file
+    content = file.read().decode('utf-8')
+    success = git_manager.write_file(file.filename, content)
+    
+    if success:
+        return jsonify({
+            'success': True,
+            'message': f'File {file.filename} uploaded successfully',
+            'filename': file.filename,
+            'size': file_size
+        })
+    else:
+        return jsonify({'success': False, 'error': 'Failed to save uploaded file'}), 500
+
+@app.route('/api/looker/connect', methods=['POST'])
+def looker_connect():
+    """Connect to Looker"""
+    data = request.json
+    base_url = data.get('base_url')
+    client_id = data.get('client_id')
+    client_secret = data.get('client_secret')
+    
+    if not all([base_url, client_id, client_secret]):
+        return jsonify({'success': False, 'error': 'All Looker credentials required'}), 400
+    
+    result = looker_manager.connect(base_url, client_id, client_secret)
+    return jsonify(result)
+
+@app.route('/api/looker/dashboards', methods=['GET'])
+def get_looker_dashboards():
+    """Get Looker dashboards"""
+    result = looker_manager.get_dashboards()
+    return jsonify(result)
+
+@app.route('/api/looker/query', methods=['POST'])
+def run_looker_query():
+    """Run Looker query"""
+    data = request.json
+    query_id = data.get('query_id')
+    result_format = data.get('result_format', 'json')
+    
+    if not query_id:
+        return jsonify({'success': False, 'error': 'Query ID required'}), 400
+    
+    result = looker_manager.run_query(query_id, result_format)
+    return jsonify(result)
+
+@app.route('/api/execute/python', methods=['POST'])
+def execute_python():
+    """Execute Python script"""
+    data = request.json
+    script_content = data.get('script')
+    script_name = data.get('filename', 'temp_script.py')
+    
+    if not script_content:
+        return jsonify({'success': False, 'error': 'Script content required'}), 400
+    
+    try:
+        # Create temporary script file
+        script_path = os.path.join(git_manager.repo_path or config.WORKSPACE_DIR, script_name)
         
-        const result = await response.json();
+        with open(script_path, 'w') as f:
+            f.write(script_content)
         
-        if (result.success) {
-            // Update file tree with actual repository files
-            updateFileTreeFromAPI(result.file_tree);
-            addTerminalOutput('✓ Repository loaded successfully');
-        }
-    } catch (error) {
-        addTerminalOutput('✗ Failed to load repository: ' + error.message);
-    }
-}
-```
+        # Execute script
+        result = subprocess.run(
+            ['python', script_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=git_manager.repo_path or config.WORKSPACE_DIR
+        )
+        
+        return jsonify({
+            'success': True,
+            'stdout': result.stdout,
+            'stderr': result.stderr,
+            'return_code': result.returncode
+        })
+        
+    except subprocess.TimeoutExpired:
+        return jsonify({'success': False, 'error': 'Script execution timeout'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-## 🔧 **API Endpoints**
+# Serve static files (for development)
+@app.route('/')
+def serve_frontend():
+    """Serve the frontend HTML file"""
+    return send_from_directory('../', 'index.html')
 
-Your backend provides these endpoints:
+@app.route('/<path:path>')
+def serve_static(path):
+    """Serve static files"""
+    return send_from_directory('../', path)
 
-### **Git Operations**
-- `POST /api/git/clone` - Clone repository
-- `POST /api/git/fetch` - Fetch changes
-- `POST /api/git/push` - Commit and push
-- `POST /api/git/pull` - Pull changes
-
-### **File Operations**
-- `GET /api/files/tree` - Get file tree
-- `POST /api/files/read` - Read file content
-- `POST /api/files/write` - Write file content
-- `POST /api/files/upload` - Upload file
-
-### **Looker Operations**
-- `POST /api/looker/connect` - Connect to Looker
-- `GET /api/looker/dashboards` - Get dashboards
-- `POST /api/looker/query` - Run query
-
-### **Execution**
-- `POST /api/execute/python` - Execute Python scripts
-
-## 🔒 **Security Setup**
-
-### **GitHub Token**
-1. Go to GitHub Settings → Developer settings → Personal access tokens
-2. Generate new token with these scopes:
-   - `repo` (Full repository access)
-   - `workflow` (Update GitHub Action workflows)
-3. Copy token to `.env` file
-
-### **Looker API Credentials**
-1. In Looker Admin → Users → API3 Keys
-2. Create new API3 key pair
-3. Copy Client ID and Secret to `.env` file
-
-## 🚦 **Testing the Setup**
-
-1. **Start Backend**: `python backend/app.py`
-2. **Open Frontend**: Navigate to `http://localhost:5000`
-3. **Test Features**:
-   - Enter GitHub repository URL
-   - Test Git operations
-   - Configure Looker credentials
-   - Upload files
-   - Execute Python scripts
-
-## 🔄 **Development Workflow**
-
-```bash
-# Terminal 1: Run backend
-cd backend
-python app.py
-
-# Terminal 2: Frontend development (if needed)
-# Serve frontend files or use live reload tools
-
-# Terminal 3: Testing
-curl -X GET http://localhost:5000/api/health
-```
-
-## 📝 **Production Deployment**
-
-For production, consider:
-
-1. **Use Production WSGI Server**: Gunicorn, uWSGI
-2. **Environment Variables**: Use proper secrets management
-3. **Reverse Proxy**: Nginx for serving static files
-4. **HTTPS**: SSL certificates for secure communication
-5. **Authentication**: Add user authentication system
-6. **Rate Limiting**: Protect API endpoints
-7. **Logging**: Comprehensive logging system
-
-```bash
-# Production example with Gunicorn
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 app:app
-```
-
-This backend setup gives you a fully functional interface with real GitHub and Looker SDK integration!
+if __name__ == '__main__':
+    # Create workspace directory
+    os.makedirs(config.WORKSPACE_DIR, exist_ok=True)
+    
+    print("🚀 Starting GitHub Code Review Backend...")
+    print(f"📁 Workspace directory: {config.WORKSPACE_DIR}")
+    print(f"🌐 Server will run on: http://localhost:5000")
+    print(f"📋 API endpoints available at: http://localhost:5000/api/")
+    
+    app.run(host='0.0.0.0', port=5000, debug=True)
