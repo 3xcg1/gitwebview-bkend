@@ -1,0 +1,10 @@
+# flyctl launch added from .gitignore
+# Ignore node_modules folder
+**/node_modules
+
+# Ignore log files
+**/*.log
+
+# Ignore environment variables file
+**/.env
+fly.toml

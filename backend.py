@@ -1,5 +1,5 @@
 # backend/app.py
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 import os
 import git
@@ -17,7 +17,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)  # Enable CORS for frontend communication
 
 # Configuration
@@ -281,6 +281,12 @@ class LookerManager:
 git_manager = GitManager(config.WORKSPACE_DIR)
 looker_manager = LookerManager()
 
+# Serve frontend
+@app.route('/')
+def serve_index():
+    return render_template('index.html')
+
+
 # API Routes
 
 @app.route('/api/health', methods=['GET'])
@@ -318,7 +324,7 @@ def clone_repository():
 def git_fetch():
     """Fetch changes from remote"""
     result = git_manager.fetch_changes()
-    return jsonify(result)
+    return jsonify(success=True, message="Fetched latest changes")
 
 @app.route('/api/git/push', methods=['POST'])
 def git_push():
@@ -440,6 +446,12 @@ def run_looker_query():
     result = looker_manager.run_query(query_id, result_format)
     return jsonify(result)
 
+# placeholder:
+@app.route('/api/test', methods=['GET'])
+def test_api():
+    return jsonify({"message": "Backend is working!"})
+
+
 @app.route('/api/execute/python', methods=['POST'])
 def execute_python():
     """Execute Python script"""
@@ -478,24 +490,17 @@ def execute_python():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# Serve static files (for development)
-@app.route('/')
-def serve_frontend():
-    """Serve the frontend HTML file"""
-    return send_from_directory('../', 'index.html')
 
-@app.route('/<path:path>')
+@app.route('/static/<path:path>')
 def serve_static(path):
-    """Serve static files"""
-    return send_from_directory('../', path)
+    return send_from_directory('static', path)
 
-if __name__ == '__main__':
-    # Create workspace directory
-    os.makedirs(config.WORKSPACE_DIR, exist_ok=True)
-    
-    print("🚀 Starting GitHub Code Review Backend...")
-    print(f"📁 Workspace directory: {config.WORKSPACE_DIR}")
-    print(f"🌐 Server will run on: http://localhost:5000")
-    print(f"📋 API endpoints available at: http://localhost:5000/api/")
-    
-    app.run(host='0.0.0.0', port=5000, debug=True)
+# Create workspace directory when module is imported
+os.makedirs(config.WORKSPACE_DIR, exist_ok=True)
+
+print("🚀 Starting GitHub Code Review Backend...")
+print(f"📁 Workspace directory: {config.WORKSPACE_DIR}")
+print(f"🌐 Server will run on: http://0.0.0.0:5000")
+print(f"📋 API endpoints available at: http://0.0.0.0:5000/api/")
+
+# DO NOT call app.run() here — Gunicorn will handle running the server
